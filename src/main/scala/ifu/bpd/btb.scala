@@ -57,6 +57,27 @@ class BTBBranchPredictorBank(params: BoomBTBParams = BoomBTBParams())(implicit p
 
   override val metaSz = s1_meta.asUInt.getWidth
 
+  // ==========================================
+  // [NEW] 1. 实例化安全组件
+  // BOOM 是多发射的，一次可能读取 bankWidth 个预测目标
+  // 所以我们需要生成 bankWidth 个安全组件实体
+  // ==========================================
+  val btb_sec = Seq.fill(bankWidth) { Module(new BTBSecurityComponent(dataWidth = vaddrBitsExtended)) }
+  
+  for (w <- 0 until bankWidth) {
+    btb_sec(w).io.asid := 0.U
+    btb_sec(w).io.vmid := 0.U
+    btb_sec(w).io.ss   := 0.U
+    btb_sec(w).io.el   := 0.U
+    btb_sec(w).io.event_tick := false.B
+    btb_sec(w).io.seed_valid := false.B
+    btb_sec(w).io.seed_value := 0.U
+    
+    // 初始化时将加密口置 0，稍后专人专用
+    btb_sec(w).io.enc_plaintext := 0.U
+  }
+  // ==========================================
+
   val doing_reset = RegInit(true.B)
   val reset_idx   = RegInit(0.U(log2Ceil(nSets).W))
   reset_idx := reset_idx + doing_reset
@@ -91,10 +112,28 @@ class BTBBranchPredictorBank(params: BoomBTBParams = BoomBTBParams())(implicit p
     val entry_meta = s1_req_rmeta(s1_hit_ways(w))(w)
     val entry_btb  = s1_req_rbtb(s1_hit_ways(w))(w)
     s1_resp(w).valid := !doing_reset && s1_valid && s1_hits(w)
-    s1_resp(w).bits  := Mux(
+
+    // ==========================================
+    // [MODIFIED] 2. 拦截并解密预测地址
+    // ==========================================
+    // 先把原本算出来的 target 存到一个中间变量里
+    val raw_target = Mux(
       entry_btb.extended,
       s1_req_rebtb,
       (s1_pc.asSInt + (w << 1).S + entry_btb.offset).asUInt)
+
+    // 把读出的数据喂给解密器
+    btb_sec(w).io.dec_ciphertext := raw_target
+    
+    // 输出给流水线的最终地址，使用解密后的明文
+    s1_resp(w).bits := btb_sec(w).io.dec_plaintext
+    // ==========================================
+
+    /*
+    s1_resp(w).bits  := Mux(
+      entry_btb.extended,
+      s1_req_rebtb,
+      (s1_pc.asSInt + (w << 1).S + entry_btb.offset).asUInt)*/
     s1_is_br(w)  := !doing_reset && s1_resp(w).valid &&  entry_meta.is_br
     s1_is_jal(w) := !doing_reset && s1_resp(w).valid && !entry_meta.is_br
 
@@ -137,10 +176,22 @@ class BTBBranchPredictorBank(params: BoomBTBParams = BoomBTBParams())(implicit p
   val s1_update_cfi_idx = s1_update.bits.cfi_idx.bits
   val s1_update_meta    = s1_update.bits.meta.asTypeOf(new BTBPredictMeta)
 
+  // ==========================================
+  // [NEW] 3. 拦截并加密要存入 BTB 的目标地址
+  // 写入端口每周期只有一个，我们借用第 0 号组件的加密通道
+  // ==========================================
+  btb_sec(0).io.enc_plaintext := s1_update.bits.target
+  val safe_update_target = btb_sec(0).io.enc_ciphertext
+  // ==========================================
+
   val max_offset_value = Cat(0.B, ~(0.U((offsetSz-1).W))).asSInt
   val min_offset_value = Cat(1.B,  (0.U((offsetSz-1).W))).asSInt
-  val new_offset_value = (s1_update.bits.target.asSInt -
+
+  // [MODIFIED] 把 s1_update.bits.target 替换为 safe_update_target
+  val new_offset_value = (safe_update_target.asSInt -
     (s1_update.bits.pc + (s1_update.bits.cfi_idx.bits << 1)).asSInt)
+  // val new_offset_value = (s1_update.bits.target.asSInt -
+    // (s1_update.bits.pc + (s1_update.bits.cfi_idx.bits << 1)).asSInt)
   val offset_is_extended = (new_offset_value > max_offset_value ||
                             new_offset_value < min_offset_value)
 
@@ -191,9 +242,15 @@ class BTBBranchPredictorBank(params: BoomBTBParams = BoomBTBParams())(implicit p
 
     }
   }
+  /*
   when (s1_update_wbtb_mask =/= 0.U && offset_is_extended) {
     ebtb.write(s1_update_idx, s1_update.bits.target)
   }
-
+  */
+    when (s1_update_wbtb_mask =/= 0.U && offset_is_extended) {
+    // [MODIFIED] 把 s1_update.bits.target 替换为 safe_update_target
+    ebtb.write(s1_update_idx, safe_update_target)
+  }
+  
 }
 
