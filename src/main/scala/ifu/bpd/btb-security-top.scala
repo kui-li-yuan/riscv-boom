@@ -32,6 +32,17 @@ class BTBSecurityIO(val dataWidth: Int, val entropyWidth: Int) extends Bundle {
   val dbg_entropy = Output(UInt(entropyWidth.W))
 }
 
+// 统一enc/dec模块
+class BTBXor(val width: Int) extends Module {
+  val io = IO(new Bundle {
+    val in  = Input(UInt(width.W))
+    val key = Input(UInt(width.W))
+    val out = Output(UInt(width.W))
+  })
+
+  io.out := io.in ^ io.key
+}
+
 // 2. 定义模块本体
 class BTBSecurityComponent(val dataWidth: Int = 64, val entropyWidth: Int = 32)(implicit p: Parameters) extends BoomModule {
   val io = IO(new BTBSecurityIO(dataWidth, entropyWidth))
@@ -40,14 +51,26 @@ class BTBSecurityComponent(val dataWidth: Int = 64, val entropyWidth: Int = 32)(
   // 【核心框架：Dummy 逻辑，后续把真实的加解密写在这里】
   // ==========================================
 
-  // 目前是“透明透传”模式，明文进，密文出（但值不变）
-  io.enc_ciphertext := io.enc_plaintext
-  io.dec_plaintext  := io.dec_ciphertext
+  // 真正接入 异或
+  val xorEnc = Module(new BTBXor(dataWidth))
+  val xorDec = Module(new BTBXor(dataWidth))
 
-  // 假装密钥永远准备好了
+  // key 目前先用一个简单版本（后面再换 key_gen）
+  val key = RegInit(0.U(dataWidth.W))
+
+  // ===== Encrypt =====
+  xorEnc.io.in  := io.enc_plaintext
+  xorEnc.io.key := key
+  io.enc_ciphertext := xorEnc.io.out
+
+  // ===== Decrypt =====
+  xorDec.io.in  := io.dec_ciphertext
+  xorDec.io.key := key
+  io.dec_plaintext := xorDec.io.out
+
+  // ===== 先保持简单 =====
   io.key_ready := true.B
-
-  // 调试信号默认置 0
-  io.dbg_key     := 0.U
+  io.dbg_key   := key
   io.dbg_entropy := 0.U
+
 }
