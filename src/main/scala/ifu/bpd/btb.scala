@@ -75,6 +75,7 @@ class BTBBranchPredictorBank(params: BoomBTBParams = BoomBTBParams())(implicit p
     
     // 初始化时将加密口置 0，稍后专人专用
     btb_sec(w).io.enc_plaintext := 0.U
+    btb_sec(w).io.dec_ciphertext := 0.U
   }
   // ==========================================
 
@@ -117,6 +118,7 @@ class BTBBranchPredictorBank(params: BoomBTBParams = BoomBTBParams())(implicit p
     // [MODIFIED] 2. 拦截并解密预测地址
     // ==========================================
     // 先把原本算出来的 target 存到一个中间变量里
+    /*
     val raw_target = Mux(
       entry_btb.extended,
       s1_req_rebtb,
@@ -127,6 +129,24 @@ class BTBBranchPredictorBank(params: BoomBTBParams = BoomBTBParams())(implicit p
     
     // 输出给流水线的最终地址，使用解密后的明文
     s1_resp(w).bits := btb_sec(w).io.dec_plaintext
+    */
+    val raw_target = Mux(
+    entry_btb.extended,
+    s1_req_rebtb,
+    (s1_pc.asSInt + (w << 1).S + entry_btb.offset).asUInt
+  )
+
+  // 只对 extended 走解密
+  val final_target = Mux(
+    entry_btb.extended,
+    btb_sec(w).io.dec_plaintext,
+    raw_target
+  )
+
+  // 只有 extended 才送入 decrypt
+  btb_sec(w).io.dec_ciphertext := raw_target
+
+  s1_resp(w).bits := final_target
     // ==========================================
 
     /*
@@ -180,22 +200,62 @@ class BTBBranchPredictorBank(params: BoomBTBParams = BoomBTBParams())(implicit p
   // [NEW] 3. 拦截并加密要存入 BTB 的目标地址
   // 写入端口每周期只有一个，我们借用第 0 号组件的加密通道
   // ==========================================
+  /*
   btb_sec(0).io.enc_plaintext := s1_update.bits.target
-  val safe_update_target = btb_sec(0).io.enc_ciphertext
+
+  val safe_update_target = Mux(
+    offset_is_extended,
+    btb_sec(0).io.enc_ciphertext,
+    raw_target
+  )
   // ==========================================
 
   val max_offset_value = Cat(0.B, ~(0.U((offsetSz-1).W))).asSInt
   val min_offset_value = Cat(1.B,  (0.U((offsetSz-1).W))).asSInt
+  // ==========================================
+  // [NEW] Only encrypt extended target
+  // ==========================================
+  btb_sec(0).io.enc_plaintext := s1_update.bits.target
 
+  safe_update_target = Mux(
+    offset_is_extended,
+    btb_sec(0).io.enc_ciphertext,
+    s1_update.bits.target
+  )
   // [MODIFIED] 把 s1_update.bits.target 替换为 safe_update_target
-  val new_offset_value = (safe_update_target.asSInt -
-    (s1_update.bits.pc + (s1_update.bits.cfi_idx.bits << 1)).asSInt)
+  // val new_offset_value = (safe_update_target.asSInt -
+    // (s1_update.bits.pc + (s1_update.bits.cfi_idx.bits << 1)).asSInt)
   // val new_offset_value = (s1_update.bits.target.asSInt -
     // (s1_update.bits.pc + (s1_update.bits.cfi_idx.bits << 1)).asSInt)
+
+  val new_offset_value = (raw_target.asSInt -
+    (s1_update.bits.pc + (s1_update.bits.cfi_idx.bits << 1)).asSInt)
   val offset_is_extended = (new_offset_value > max_offset_value ||
                             new_offset_value < min_offset_value)
 
+*/
+  // 1. 先计算边界和 new_offset_value (这里必须用 s1_update.bits.target，而不是 raw_target)
+  val max_offset_value = Cat(0.B, ~(0.U((offsetSz-1).W))).asSInt
+  val min_offset_value = Cat(1.B,  (0.U((offsetSz-1).W))).asSInt
 
+  val new_offset_value = (s1_update.bits.target.asSInt -
+    (s1_update.bits.pc + (s1_update.bits.cfi_idx.bits << 1)).asSInt)
+  
+  // 2. 判断是否超出了 offset 能表示的范围 (是否需要存在 ebtb 中)
+  val offset_is_extended = (new_offset_value > max_offset_value ||
+                            new_offset_value < min_offset_value)
+
+  // 3. 将流水线传来的明文 target 送入第 0 个安全组件进行加密
+  btb_sec(0).io.enc_plaintext := s1_update.bits.target
+
+  // 4. 只有当 target 需要放进 extended BTB (ebtb) 时，才存入加密后的密文
+  // 如果没有 extended，存入的 offset 本质上没有走这段逻辑，但为了严谨我们加上 Mux
+  val safe_update_target = Mux(
+    offset_is_extended,
+    btb_sec(0).io.enc_ciphertext,
+    s1_update.bits.target
+  )
+  
   val s1_update_wbtb_data  = Wire(new BTBEntry)
   s1_update_wbtb_data.extended := offset_is_extended
   s1_update_wbtb_data.offset   := new_offset_value
