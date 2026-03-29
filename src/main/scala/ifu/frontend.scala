@@ -330,6 +330,14 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
   require(fetchWidth*coreInstBytes == outer.icacheParams.fetchBytes)
 
   val bpd = Module(new BranchPredictor)
+  // [NEW] 将真实的特权级和 ASID 从页表/状态接口引出，传给分支预测器
+  bpd.io.status_asid := io.ptw.ptbr.asid
+  bpd.io.status_prv  := io.ptw.status.prv
+  
+  // 对于 Seed，如果不加自定义 CSR 寄存器，可以暂时写死或用硬件计数器替代
+  bpd.io.seed_valid  := false.B
+  bpd.io.seed_value  := 0.U
+  
   bpd.io.f3_fire := false.B
   val ras = Module(new BoomRAS)
 

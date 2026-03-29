@@ -154,6 +154,14 @@ abstract class BranchPredictorBank(implicit p: Parameters) extends BoomModule()(
     val f3_fire = Input(Bool())
 
     val update = Input(Valid(new BranchPredictionBankUpdate))
+
+    // 新增：安全组件需要的上下文信息
+    val status_asid = Input(UInt(16.W))
+    val status_prv  = Input(UInt(2.W))  // PRV (00=User, 01=Supervisor, 11=Machine)
+    
+    // 如果你后期需要软硬件协同(用 CSR 写 Seed)，也可以把这两个加上：
+    val seed_valid  = Input(Bool())
+    val seed_value  = Input(UInt(32.W))
   })
   io.resp := io.resp_in(0)
 
@@ -209,6 +217,14 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
 
     // Update
     val update = Input(Valid(new BranchPredictionUpdate))
+    
+    // ===================================
+    // [NEW] 1. 在这里加入我们的上下文安全信号
+    // ===================================
+    val status_asid = Input(UInt(16.W))
+    val status_prv  = Input(UInt(2.W))
+    val seed_valid  = Input(Bool())
+    val seed_value  = Input(UInt(32.W))
   })
 
   var total_memsize = 0
@@ -303,6 +319,7 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
 
     banked_predictors(0).io.f3_fire := io.f3_fire
     banked_lhist_providers(0).io.f3_fire := io.f3_fire
+
   } else {
     require(nBanks == 2)
     val b0_fire = io.f3_fire && RegNext(RegNext(RegNext(banked_predictors(0).io.f0_valid)))
@@ -388,6 +405,15 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
     banked_lhist_providers(i).io.update.mispredict := io.update.bits.is_mispredict_update
     banked_lhist_providers(i).io.update.repair     := io.update.bits.is_repair_update
     banked_lhist_providers(i).io.update.lhist      := io.update.bits.lhist(i)
+
+    // ==========================================================
+    // [NEW] 在这里加入连线！不论 nBanks 是 1 还是 2，这个循环都能搞定
+    // ==========================================================
+    banked_predictors(i).io.status_asid := io.status_asid
+    banked_predictors(i).io.status_prv  := io.status_prv
+    banked_predictors(i).io.seed_valid  := io.seed_valid
+    banked_predictors(i).io.seed_value  := io.seed_value
+    // ==========================================================
   }
 
   if (nBanks == 1) {
